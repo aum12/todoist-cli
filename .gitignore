@@ -1,8 +1,8 @@
-# Binaries
-todoist-aum
-todoist-aum-mcp
-bin/
-dist/
+# Binaries (only at repo root — leading / anchors to root)
+/todoist-aum
+/todoist-aum-mcp
+/bin/
+/dist/
 
 # Test artifacts
 *.test
