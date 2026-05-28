@@ -1,0 +1,51 @@
+version: 2
+project_name: todoist-aum
+changelog:
+  disable: true
+builds:
+  - id: todoist-aum
+    main: ./cmd/todoist-aum
+    binary: todoist-aum
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X github.com/aum12/todoist-cli/internal/cli.version={{ .Version }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+  - id: todoist-aum-mcp
+    main: ./cmd/todoist-aum-mcp
+    binary: todoist-aum-mcp
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+brews:
+  - name: todoist-aum
+    repository:
+      owner: aum12
+      name: homebrew-tap
+    homepage: "https://github.com/aum12/todoist-cli"
+    description: "Every Todoist feature, plus voice-friendly capture, ADHD-aware daily loops"
+    install: |
+      bin.install "todoist-aum"
+      bin.install "todoist-aum-mcp"

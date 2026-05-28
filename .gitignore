@@ -1,0 +1,24 @@
+# Binaries
+todoist-aum
+todoist-aum-mcp
+bin/
+dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local config
+*.local.json
+.env
