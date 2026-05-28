@@ -71,8 +71,8 @@ project triage of existing tasks use 'triage'.`,
   # Voice capture from Apple Watch
   todoist-aum capture "buy carrots" --into Groceries --label walmart --agent
 
-  # Kids-from-school with date, wrap-up reminder, location
-  todoist-aum capture "pickup kids from school" --due "today 3:30pm" --reminder-offset 20m --location "School" --label school --label family --agent
+  # Stop-at-hardware-store with date, wrap-up reminder, location
+  todoist-aum capture "stop by hardware store" --due "today 3:30pm" --reminder-offset 20m --location "Hardware Store" --label errand --label evening --agent
 
   # Recipe to grocery list (one ingredient per line on stdin)
   echo -e "carrots\ncelery\nonion" | todoist-aum capture --stdin --into Groceries --label walmart`, "\n"),

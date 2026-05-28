@@ -1,6 +1,6 @@
 # todoist-cli (`todoist-aum`)
 
-A Go CLI for the Todoist Unified API v1. Built for voice-driven capture, ADHD-friendly daily loops, and agent automation (Apple Watch + Anthropic Routines + Claude).
+A Go CLI for the Todoist Unified API v1. Built for voice-driven capture, structured daily loops, and agent automation (Apple Watch + Anthropic Routines + Claude).
 
 ## Install
 
@@ -53,15 +53,15 @@ Every endpoint of the Todoist API v1 is exposed as a subcommand. Plus 12 hand-wr
 todoist-aum capture "buy carrots" --into Groceries --label walmart --agent
 
 # Composed capture: task + wrap-up reminder + location reminder
-todoist-aum capture "pickup kids from school" \
+todoist-aum capture "stop by hardware store" \
   --due "today 3:30pm" --reminder-offset 20m \
-  --location "School" --label school --label family --agent
+  --location "Hardware Store" --label errand --label evening --agent
 
 # Plan my day
 todoist-aum agenda --window today --include-overdue --agent
 
-# ADHD daily ritual
-todoist-aum focus set --top 3 --reason "sprint refinement" --agent
+# Morning ritual
+todoist-aum focus set --top 3 --reason "meeting prep" --agent
 todoist-aum review --window day --compare-to-prior --agent
 
 # Bulk cleanup

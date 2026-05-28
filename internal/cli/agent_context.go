@@ -129,7 +129,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 		SchemaVersion: agentContextSchemaVersion,
 		CLI: agentContextCLI{
 			Name:        "todoist-aum",
-			Description: "Every Todoist feature, plus voice-friendly capture, ADHD-aware daily loops",
+			Description: "Every Todoist feature, plus voice-friendly capture, structured daily loops",
 			Version:     rootCmd.Version,
 		},
 		Auth: agentContextAuth{

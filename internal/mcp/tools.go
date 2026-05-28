@@ -451,7 +451,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	ctx := map[string]any{
 		"api":         "todoist",
-		"description": "Every Todoist feature, plus voice-friendly capture, ADHD-aware daily loops",
+		"description": "Every Todoist feature, plus voice-friendly capture, structured daily loops",
 		"archetype":   "project-management",
 		"tool_count":  102,
 		// tool_surface tells agents which surface a capability lives on.
@@ -623,7 +623,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			{"name": "Inbox triage with dry-run plan", "command": "triage", "description": "For each Inbox item, propose the most likely (project, label, section)", "rationale": "Token-overlap match against synced historical tasks is a local-SQL join no API endpoint offers", "via": "mcp-command-mirror"},
 			{"name": "Reschedule cascade with preview", "command": "reschedule-cascade", "description": "Postpone every task matching a Todoist filter by a relative shift, previewing per-task new due strings", "rationale": "The Todoist web UI bulk-edits without preview; recurring rules and deadline-vs-due distinctions are easy to miss.", "via": "mcp-command-mirror"},
 			{"name": "Filter-batch with preview-then-commit", "command": "filter-batch", "description": "Bulk complete, move, or relabel every task matching a Todoist filter", "rationale": "scholer/actionista pioneered the chain-of-actions pattern but made commit irreversible.", "via": "mcp-command-mirror"},
-			{"name": "Daily focus loop (ADHD-friendly goal setter)", "command": "focus", "description": "`focus set --top N --reason <why>` picks the highest-priority/deadline-tightest tasks and labels them @focus-today", "rationale": "Cross-cuts tasks ⋈ labels ⋈ deadlines as a daily ritual that no atomic MCP tool exposes", "via": "mcp-command-mirror"},
+			{"name": "Daily focus loop (daily goal setter)", "command": "focus", "description": "`focus set --top N --reason <why>` picks the highest-priority/deadline-tightest tasks and labels them @focus-today", "rationale": "Cross-cuts tasks ⋈ labels ⋈ deadlines as a daily ritual that no atomic MCP tool exposes", "via": "mcp-command-mirror"},
 			{"name": "Location/context-aware task surfacing", "command": "near", "description": "Takes a label or context name (walmart, home, office)", "rationale": "Composes label + project matching with priority/age ranking; the Todoist web UI cannot rank cross-label/project", "via": "mcp-command-mirror"},
 			{"name": "Productivity trend rollups", "command": "productivity-trend", "description": "Rollup over local completed_tasks with group-by dimensions (label, hour-of-day)", "rationale": "completed_tasks ⋈ projects ⋈ labels join is purely local", "via": "mcp-command-mirror"},
 			{"name": "Workspace workload by collaborator", "command": "workload", "description": "Cross-project rollup of open tasks per collaborator inside a workspace, by priority, overdue-age bucket, and project.", "rationale": "Joins local tasks ⋈ projects ⋈ collaborators ⋈ workspaces — the Todoist web UI shows one project at a time and exposes", "via": "mcp-command-mirror"},
@@ -637,7 +637,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			{"topic": "Inbox triage with dry-run plan", "insight": "Token-overlap match against synced historical tasks is a local-SQL join no API endpoint offers; proposals are mechanical (modal of co-occurring tags), no LLM required."},
 			{"topic": "Reschedule cascade with preview", "insight": "The Todoist web UI bulk-edits without preview; recurring rules and deadline-vs-due distinctions are easy to miss. Server filter + local due-string preview + batched commit is unique to a CLI with a local store."},
 			{"topic": "Filter-batch with preview-then-commit", "insight": "scholer/actionista pioneered the chain-of-actions pattern but made commit irreversible. We make `--dry-run` the default and require explicit `--apply` for write."},
-			{"topic": "Daily focus loop (ADHD-friendly goal setter)", "insight": "Cross-cuts tasks ⋈ labels ⋈ deadlines as a daily ritual that no atomic MCP tool exposes; designed to be paired with `review --window day` for end-of-day adherence tracking."},
+			{"topic": "Daily focus loop (daily goal setter)", "insight": "Cross-cuts tasks ⋈ labels ⋈ deadlines as a daily ritual that no atomic MCP tool exposes; designed to be paired with `review --window day` for end-of-day adherence tracking."},
 			{"topic": "Location/context-aware task surfacing", "insight": "Composes label + project matching with priority/age ranking; the Todoist web UI cannot rank cross-label/project, and `tasks get-tasks-by-filter @walmart` returns unordered results."},
 			{"topic": "Productivity trend rollups", "insight": "completed_tasks ⋈ projects ⋈ labels join is purely local; Todoist's API stats endpoint only exposes daily/weekly aggregate counts, not label-level or hour-of-day breakdowns."},
 			{"topic": "Workspace workload by collaborator", "insight": "Joins local tasks ⋈ projects ⋈ collaborators ⋈ workspaces — the Todoist web UI shows one project at a time and exposes no cross-project collaborator view."},

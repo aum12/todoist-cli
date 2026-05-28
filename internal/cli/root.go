@@ -143,8 +143,8 @@ func isCobraUsageError(err error) bool {
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "todoist-aum",
-		Short: `Todoist CLI — Every Todoist feature, plus voice-friendly capture, ADHD-aware daily loops, and productivity analytics no other Todoist…`,
-		Long: `Todoist CLI — Every Todoist feature, plus voice-friendly capture, ADHD-aware daily loops, and productivity analytics no other Todoist…
+		Short: `Todoist CLI — Every Todoist feature, plus voice-friendly capture, structured daily loops, and productivity analytics no other Todoist…`,
+		Long: `Todoist CLI — Every Todoist feature, plus voice-friendly capture, structured daily loops, and productivity analytics no other Todoist…
 
 Highlights (not in the official API docs):
   • capture   Voice/agent/routine-driven task entry. Accepts content, --into <project-name>, repeatable --label <name>, --due/--deadline (ISO or Todoist NL date), repeatable --reminder <iso> or --reminder-offset <…

@@ -38,7 +38,7 @@ type focusEnvelope struct {
 func newNovelFocusCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "focus",
-		Short: "ADHD-friendly daily-goal setter; manages the @focus-today label.",
+		Short: "Structured daily-goal setter; manages the @focus-today label.",
 		Long: `Set, show, or clear the day's top-N focus items by tagging them with the
 @focus-today label. The agent calls 'focus set' in the morning to commit to a
 small daily plan and 'focus show' (or 'review --window day') in the evening to
@@ -63,7 +63,7 @@ func newFocusSetCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "set",
 		Short:   "Tag the top-N highest-priority open tasks with @focus-today.",
-		Example: `  todoist-aum focus set --top 3 --reason "sprint refinement"`,
+		Example: `  todoist-aum focus set --top 3 --reason "meeting prep"`,
 		Annotations: map[string]string{"mcp:read-only": "false", "pp:typed-exit-codes": "0,2,5,6"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().NFlag() == 0 && len(args) == 0 {
