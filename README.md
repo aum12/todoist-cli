@@ -123,6 +123,10 @@ Then add to your MCP host config:
 └── LICENSE                       # Apache-2.0
 ```
 
+## Acknowledgments
+
+If you found this CLI useful, the foundational work is the Printing Press itself — give the upstream project a ⭐ and consider applying its [installer](https://github.com/mvanhorn/printing-press-library) to generate your own API CLIs.
+
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
