@@ -33,4 +33,27 @@ gobin="$(go env GOBIN)"
 ln -sf "${gobin}/todoist-aum" /usr/local/bin/todoist-aum
 
 echo "todoist-aum installed to ${gobin} and linked at /usr/local/bin/todoist-aum"
+
+# Refresh the local store in the background so session start never waits.
+# Two phases, sequential, detached via setsid:
+#   1. everything except comments and activities — the fast set (~15s on a
+#      large account), written page-by-page so it is queryable almost
+#      immediately. activities is the premium audit log that no local command
+#      reads (review/productivity read the tasks table; reschedule-history is
+#      live), so it is skipped entirely.
+#   2. comments only — the slow per-parent fan-out (one request per task and
+#      project). Runs after phase 1 so it never delays the data you query at
+#      session start. Parents are already populated, so --resources comments
+#      syncs just the dependent.
+# Gated on the token (sync no-ops without auth). Output goes to a log file, not
+# the hook's stdout, so the session is interactive right away.
+if [ -n "${TODOIST_API_TOKEN:-}" ]; then
+  synclog="${TMPDIR:-/tmp}/todoist-aum-sync.log"
+  setsid bash -c '
+    /usr/local/bin/todoist-aum sync --exclude comments,activities
+    /usr/local/bin/todoist-aum sync --resources comments
+  ' >"$synclog" 2>&1 </dev/null &
+  echo "todoist-aum sync started in background (fast set first, then comments) → $synclog"
+fi
+
 exit 0
