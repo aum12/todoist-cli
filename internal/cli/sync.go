@@ -131,6 +131,30 @@ Resource scoping:
 				resources = defaultSyncResources()
 			}
 
+			// Drop names that are purely dependent (parent-keyed) resources
+			// from the flat work list — they have no standalone endpoint path
+			// and would error in syncResource (e.g. comments, which must be
+			// fetched per task/project). They still run via parentFilter in
+			// syncDependentResources below. Unknown names are kept so typos
+			// still surface as a flat-path error rather than being swallowed.
+			if len(resources) > 0 {
+				depOnly := make(map[string]bool)
+				for _, dep := range dependentResourceDefs() {
+					if _, err := syncResourcePath(dep.Name); err != nil {
+						depOnly[dep.Name] = true
+					}
+				}
+				if len(depOnly) > 0 {
+					filtered := resources[:0]
+					for _, r := range resources {
+						if !depOnly[r] {
+							filtered = append(filtered, r)
+						}
+					}
+					resources = filtered
+				}
+			}
+
 			// Reject --resource-param keys that don't match a known resource.
 			// Validates against the full top-level + dependent set, not the
 			// user-filtered `resources` slice, so legitimate cases like
@@ -1274,7 +1298,6 @@ func defaultSyncResources() []string {
 	return []string{
 		"activities",
 		"backups",
-		"comments",
 		"labels",
 		"labels-shared",
 		"location-reminders",
@@ -1295,7 +1318,6 @@ func knownSyncResourceNames() []string {
 	names := []string{
 		"activities",
 		"backups",
-		"comments",
 		"labels",
 		"labels-shared",
 		"location-reminders",
@@ -1320,7 +1342,6 @@ func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{
 		"activities":         "/api/v1/activities",
 		"backups":            "/api/v1/backups",
-		"comments":           "/api/v1/comments",
 		"labels":             "/api/v1/labels",
 		"labels-shared":      "/api/v1/labels/shared",
 		"location-reminders": "/api/v1/location_reminders",
@@ -1360,6 +1381,19 @@ type dependentPathParamDef struct {
 
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
+		// Comments are fetched per-parent: GET /api/v1/comments requires
+		// exactly one of task_id or project_id as a query parameter (the bare
+		// endpoint returns 400 BAD_REQUEST "No id to filter notes provided").
+		// The parent id is carried as an embedded query string in PathTemplate;
+		// the client merges it with pagination params at request time. note_count
+		// on the active-tasks endpoint is always 0, so it cannot be used to skip
+		// parents — every task and project must be iterated, as with collaborators.
+		{Name: "comments", ParentTable: "tasks", ParentIDParam: "task_id", PathTemplate: "/api/v1/comments?task_id={task_id}", KeyField: "", PathParams: []dependentPathParamDef{
+			{Param: "task_id", Field: "id"},
+		}},
+		{Name: "comments", ParentTable: "projects", ParentIDParam: "project_id", PathTemplate: "/api/v1/comments?project_id={project_id}", KeyField: "", PathParams: []dependentPathParamDef{
+			{Param: "project_id", Field: "id"},
+		}},
 		{Name: "collaborators", ParentTable: "projects", ParentIDParam: "project_id", PathTemplate: "/api/v1/projects/{project_id}/collaborators", KeyField: "", PathParams: []dependentPathParamDef{
 			{Param: "project_id", Field: "id"},
 		}},
