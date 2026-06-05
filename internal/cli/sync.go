@@ -41,6 +41,7 @@ type syncResult struct {
 
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
+	var exclude []string
 	var full bool
 	var since string
 	var concurrency int
@@ -81,7 +82,14 @@ Resource scoping:
   by hand). There is no flag today to suppress the cascade for a named
   parent. To run a dependent without re-syncing its parent, list only
   the dependent by name; the parent table must already be populated
-  from a prior sync.`,
+  from a prior sync.
+
+  --exclude drops the named resources from the run by name, after the
+  --resources/default selection and the parent cascade are resolved. It
+  applies to both top-level and parent-keyed dependent resources, so it
+  is the way to suppress an expensive dependent (e.g. comments, which
+  fans out one request per task and project) while still syncing its
+  parent.`,
 		Example: `  # Sync all resources
   todoist-aum sync
 
@@ -98,7 +106,10 @@ Resource scoping:
   todoist-aum sync --concurrency 8
 
   # Latest-only: refresh head of each resource, no historical backfill
-  todoist-aum sync --latest-only`,
+  todoist-aum sync --latest-only
+
+  # Skip the expensive per-parent comments fan-out
+  todoist-aum sync --exclude comments`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)
 			if err != nil {
@@ -153,6 +164,25 @@ Resource scoping:
 					}
 					resources = filtered
 				}
+			}
+
+			// --exclude drops named resources from the run. Apply it after the
+			// default/dependent-only selection above so it can suppress a
+			// dependent (e.g. comments) without the caller having to enumerate
+			// every other resource via --resources. The same set is handed to
+			// syncDependentResources below to skip excluded dependents there.
+			excludeSet := make(map[string]bool, len(exclude))
+			for _, e := range exclude {
+				excludeSet[e] = true
+			}
+			if len(excludeSet) > 0 {
+				filtered := resources[:0]
+				for _, r := range resources {
+					if !excludeSet[r] {
+						filtered = append(filtered, r)
+					}
+				}
+				resources = filtered
 			}
 
 			// Reject --resource-param keys that don't match a known resource.
@@ -291,7 +321,7 @@ Resource scoping:
 				}
 			}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter, userParams, syncEventWriter)
+			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter, excludeSet, userParams, syncEventWriter)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -376,6 +406,7 @@ Resource scoping:
 	}
 
 	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync. Naming a parent also runs its parent-keyed dependents (see Long help for scoping).")
+	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Comma-separated resource types to skip, applied after selection and the parent cascade. Works on top-level and dependent resources (e.g. --exclude comments).")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
@@ -1412,20 +1443,37 @@ func dependentResourceDefs() []dependentResourceDef {
 func syncDependentResources(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string, userParams *syncUserParams, syncEvents io.Writer) []syncResult {
+}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string, exclude map[string]bool, userParams *syncUserParams, syncEvents io.Writer) []syncResult {
 	allow := make(map[string]bool, len(parentFilter))
 	for _, r := range parentFilter {
 		allow[r] = true
 	}
 	var results []syncResult
-	for _, dep := range dependentResourceDefs() {
-		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
-			continue
-		}
+	for _, dep := range selectedDependents(dependentResourceDefs(), allow, exclude) {
 		res := syncDependentResource(ctx, c, db, dep, sinceTS, full, maxPages, latestOnly, userParams, syncEvents)
 		results = append(results, res)
 	}
 	return results
+}
+
+// selectedDependents returns the dependent resources that should run given the
+// --resources allow set (empty = everything) and the --exclude set. A dependent
+// is included when its parent table or its own name is allowed, and is then
+// dropped if its own name is excluded — so --exclude suppresses a dependent even
+// when its parent is in scope, and naming a parent no longer forces its
+// dependents to run.
+func selectedDependents(defs []dependentResourceDef, allow, exclude map[string]bool) []dependentResourceDef {
+	var out []dependentResourceDef
+	for _, dep := range defs {
+		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
+			continue
+		}
+		if exclude[dep.Name] {
+			continue
+		}
+		out = append(out, dep)
+	}
+	return out
 }
 
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
