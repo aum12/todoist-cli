@@ -24,13 +24,13 @@ fi
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 go install ./cmd/todoist-aum
 
-# Make sure GOPATH/bin (where `go install` drops the binary) is on PATH for
-# interactive shells. Idempotent: only append the line once.
+# Symlink into /usr/local/bin, which is on PATH for every shell type —
+# interactive and non-interactive alike — so the CLI is callable everywhere
+# (your terminal, hooks, the agent's shell) without relying on ~/.bashrc
+# being sourced. -f makes it idempotent and repoints at the fresh build.
 gobin="$(go env GOBIN)"
 [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
-if ! grep -qsF "$gobin" "${HOME}/.bashrc" 2>/dev/null; then
-  printf 'export PATH="$PATH:%s"\n' "$gobin" >> "${HOME}/.bashrc"
-fi
+ln -sf "${gobin}/todoist-aum" /usr/local/bin/todoist-aum
 
-echo "todoist-aum installed to ${gobin}"
+echo "todoist-aum installed to ${gobin} and linked at /usr/local/bin/todoist-aum"
 exit 0
