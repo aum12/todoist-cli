@@ -39,8 +39,14 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Non-learn CLIs stay at v2.
-const StoreSchemaVersion = 2
+// checked on every open.
+//
+// v3: the "collaborators" domain table moved from an id-only primary key to a
+// composite (id, projects_id) key. A collaborator on N shared projects is
+// returned once per project by /projects/{id}/collaborators; under the old
+// key every row after the first CONFLICTed on id and overwrote projects_id,
+// so each user collapsed to a single project. See migrateCollaboratorsCompositeKey.
+const StoreSchemaVersion = 3
 
 const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
 	id, resource_type, content, tokenize='porter unicode61'
@@ -464,12 +470,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS "idx_projects_archive_projects_id" ON "projects_archive"("projects_id")`,
+		// Composite (id, projects_id) key: a collaborator appears once per
+		// shared project, so the same user id must coexist across projects.
 		`CREATE TABLE IF NOT EXISTS "collaborators" (
-			"id" TEXT PRIMARY KEY,
+			"id" TEXT NOT NULL,
 			"projects_id" TEXT NOT NULL,
 			"data" JSON NOT NULL,
 			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-			"parent_id" TEXT
+			"parent_id" TEXT,
+			PRIMARY KEY ("id", "projects_id")
 		)`,
 		`CREATE INDEX IF NOT EXISTS "idx_collaborators_projects_id" ON "collaborators"("projects_id")`,
 		`CREATE INDEX IF NOT EXISTS "idx_collaborators_parent_id" ON "collaborators"("parent_id")`,
@@ -695,6 +704,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 
+		if current < 3 {
+			if err := s.migrateCollaboratorsCompositeKey(ctx, conn); err != nil {
+				return fmt.Errorf("migrating collaborators composite key: %w", err)
+			}
+		}
+
 		if err := s.backfillColumns(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling columns: %w", err)
 		}
@@ -768,6 +783,86 @@ func (s *Store) migrateResourcesCompositeKey(ctx context.Context, conn *sql.Conn
 		return fmt.Errorf("rebuilding resources_fts: %w", err)
 	}
 	return nil
+}
+
+// migrateCollaboratorsCompositeKey rebuilds the "collaborators" table with a
+// composite (id, projects_id) primary key. The v1/v2 table keyed on id alone,
+// so a user shared on multiple projects kept only the last-synced project row
+// (every later INSERT CONFLICTed on id and overwrote projects_id). Existing
+// rows are already collapsed to one-per-id; copying them is loss-free, and the
+// next sync repopulates the full (user, project) matrix now that the key admits
+// it. Unlike resources, this table has no FTS mirror to rebuild.
+func (s *Store) migrateCollaboratorsCompositeKey(ctx context.Context, conn *sql.Conn) error {
+	exists, err := tableExists(ctx, conn, "collaborators")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	composite, err := collaboratorsTableHasCompositeKey(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if composite {
+		return nil
+	}
+
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE "collaborators_v2" (
+		"id" TEXT NOT NULL,
+		"projects_id" TEXT NOT NULL,
+		"data" JSON NOT NULL,
+		"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+		"parent_id" TEXT,
+		PRIMARY KEY ("id", "projects_id")
+	)`); err != nil {
+		return fmt.Errorf("creating collaborators_v2: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO "collaborators_v2" ("id", "projects_id", "data", "synced_at", "parent_id")
+		SELECT "id", "projects_id", "data", "synced_at", "parent_id" FROM "collaborators"`); err != nil {
+		return fmt.Errorf("copying collaborators rows: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `DROP TABLE "collaborators"`); err != nil {
+		return fmt.Errorf("dropping old collaborators table: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `ALTER TABLE "collaborators_v2" RENAME TO "collaborators"`); err != nil {
+		return fmt.Errorf("renaming collaborators_v2: %w", err)
+	}
+	// Recreate the secondary indexes dropped with the old table. The
+	// idempotent CREATE INDEX IF NOT EXISTS statements in the migrations
+	// slice also cover this, but doing it here keeps the rebuild self-contained.
+	if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS "idx_collaborators_projects_id" ON "collaborators"("projects_id")`); err != nil {
+		return fmt.Errorf("recreating idx_collaborators_projects_id: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS "idx_collaborators_parent_id" ON "collaborators"("parent_id")`); err != nil {
+		return fmt.Errorf("recreating idx_collaborators_parent_id: %w", err)
+	}
+	return nil
+}
+
+func collaboratorsTableHasCompositeKey(ctx context.Context, conn *sql.Conn) (bool, error) {
+	rows, err := conn.QueryContext(ctx, `PRAGMA table_info(collaborators)`)
+	if err != nil {
+		return false, fmt.Errorf("reading collaborators table info: %w", err)
+	}
+	defer rows.Close()
+
+	pk := map[string]int{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pkOrder int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pkOrder); err != nil {
+			return false, fmt.Errorf("scanning collaborators table info: %w", err)
+		}
+		pk[name] = pkOrder
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("reading collaborators table info rows: %w", err)
+	}
+	return pk["id"] == 1 && pk["projects_id"] == 2, nil
 }
 
 func tableExists(ctx context.Context, conn *sql.Conn, name string) (bool, error) {
@@ -1517,7 +1612,7 @@ func (s *Store) upsertCollaboratorsTx(tx *sql.Tx, id string, obj map[string]any,
 	if _, err := tx.Exec(
 		`INSERT INTO "collaborators" ("id", "projects_id", "data", "synced_at", "parent_id")
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT("id") DO UPDATE SET "projects_id" = excluded."projects_id", "data" = excluded."data", "synced_at" = excluded."synced_at", "parent_id" = excluded."parent_id"`,
+		 ON CONFLICT("id", "projects_id") DO UPDATE SET "data" = excluded."data", "synced_at" = excluded."synced_at", "parent_id" = excluded."parent_id"`,
 		id,
 		lookupFieldValue(obj, "projects_id"),
 		string(data),

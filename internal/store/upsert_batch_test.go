@@ -726,10 +726,13 @@ func TestUpsertBatch_SetsCollaboratorsParentID(t *testing.T) {
 	}
 	defer s.Close()
 
+	// projects_id is the parentFKKey the dependent sync injects alongside
+	// parent_id; without it the NOT NULL typed insert never lands and there is
+	// no parent_id column to verify.
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "child-001", "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B"}`),
+		json.RawMessage(`{"id": "child-001", "parent_id": "parent-A", "projects_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A", "projects_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B", "projects_id": "parent-B"}`),
 	}
 	if _, _, err := s.UpsertBatch("collaborators", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
@@ -1802,10 +1805,13 @@ func TestUpsertBatch_SetsWorkspacesProjectsParentID(t *testing.T) {
 	}
 	defer s.Close()
 
+	// workspaces_id is the parentFKKey the dependent sync injects alongside
+	// parent_id; without it the NOT NULL typed insert never lands and there is
+	// no parent_id column to verify.
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "child-001", "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B"}`),
+		json.RawMessage(`{"id": "child-001", "parent_id": "parent-A", "workspaces_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A", "workspaces_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B", "workspaces_id": "parent-B"}`),
 	}
 	if _, _, err := s.UpsertBatch("workspaces_projects", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)

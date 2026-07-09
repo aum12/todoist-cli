@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -475,6 +476,151 @@ func TestMigrate_ResourcesCompositeKeyUpgrade(t *testing.T) {
 	}
 	if len(matches) != 1 || string(matches[0]) != `{"kind":"biz","name":"legacy restaurant"}` {
 		t.Fatalf("legacy search = %q, want migrated biz payload", matches)
+	}
+}
+
+// TestCollaborators_CompositeKeyPreservesMultiProjectMembership pins the v3
+// fix: a collaborator shared on multiple projects must produce one row per
+// project. Before the composite (id, projects_id) key, each project after the
+// first CONFLICTed on id alone and overwrote projects_id, collapsing every
+// user to a single last-synced project. This is the exact item shape the
+// dependent sync injects (projects_id = parentFKKey, parent_id = parent id).
+func TestCollaborators_CompositeKeyPreservesMultiProjectMembership(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id":"u-fei","projects_id":"proj-A","parent_id":"proj-A","email":"fei@example.com"}`),
+		json.RawMessage(`{"id":"u-fei","projects_id":"proj-B","parent_id":"proj-B","email":"fei@example.com"}`),
+		json.RawMessage(`{"id":"u-sum","projects_id":"proj-A","parent_id":"proj-A","email":"sum@example.com"}`),
+	}
+	if _, _, err := s.UpsertBatch("collaborators", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+
+	var feiRows int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM collaborators WHERE id = 'u-fei'`).Scan(&feiRows); err != nil {
+		t.Fatalf("count u-fei rows: %v", err)
+	}
+	if feiRows != 2 {
+		t.Fatalf("u-fei row count = %d, want 2 (one per project)", feiRows)
+	}
+
+	var total int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM collaborators`).Scan(&total); err != nil {
+		t.Fatalf("count all: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("collaborators row count = %d, want 3", total)
+	}
+
+	// Re-upserting the same (id, projects_id) updates in place, never duplicates.
+	if _, _, err := s.UpsertBatch("collaborators", items[:1]); err != nil {
+		t.Fatalf("re-UpsertBatch: %v", err)
+	}
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM collaborators`).Scan(&total); err != nil {
+		t.Fatalf("count all after re-upsert: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("row count after idempotent re-upsert = %d, want 3", total)
+	}
+}
+
+// TestMigrate_CollaboratorsCompositeKeyUpgrade verifies that opening a pre-v3
+// DB (collaborators keyed on id alone) rebuilds the table with a composite
+// (id, projects_id) key, preserves the existing row, and thereafter admits the
+// same user id across multiple projects.
+func TestMigrate_CollaboratorsCompositeKeyUpgrade(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE "collaborators" (
+		"id" TEXT PRIMARY KEY,
+		"projects_id" TEXT NOT NULL,
+		"data" JSON NOT NULL,
+		"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+		"parent_id" TEXT
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create v2 collaborators: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO "collaborators" ("id","projects_id","data","parent_id") VALUES ('u-fei','proj-A','{"id":"u-fei","email":"fei@example.com"}','proj-A')`); err != nil {
+		raw.Close()
+		t.Fatalf("insert v2 collaborator: %v", err)
+	}
+	// A DB already at the resources composite key but before the collaborators one.
+	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp v2: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	rows, err := s.DB().Query(`PRAGMA table_info(collaborators)`)
+	if err != nil {
+		t.Fatalf("table_info collaborators: %v", err)
+	}
+	pk := map[string]int{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pkOrder int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pkOrder); err != nil {
+			rows.Close()
+			t.Fatalf("scan table_info: %v", err)
+		}
+		pk[name] = pkOrder
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("table_info rows: %v", err)
+	}
+	rows.Close()
+	if pk["id"] != 1 || pk["projects_id"] != 2 {
+		t.Fatalf("collaborators primary key order = id:%d projects_id:%d, want id:1 projects_id:2", pk["id"], pk["projects_id"])
+	}
+
+	// Legacy row survived the rebuild.
+	var legacy int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM collaborators WHERE id='u-fei' AND projects_id='proj-A'`).Scan(&legacy); err != nil {
+		t.Fatalf("count legacy row: %v", err)
+	}
+	if legacy != 1 {
+		t.Fatalf("legacy row count = %d, want 1 (migration must preserve existing rows)", legacy)
+	}
+
+	// The same user on a second project now coexists instead of overwriting.
+	item := []json.RawMessage{json.RawMessage(`{"id":"u-fei","projects_id":"proj-B","parent_id":"proj-B","email":"fei@example.com"}`)}
+	if _, _, err := s.UpsertBatch("collaborators", item); err != nil {
+		t.Fatalf("UpsertBatch after upgrade: %v", err)
+	}
+	var feiRows int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM collaborators WHERE id='u-fei'`).Scan(&feiRows); err != nil {
+		t.Fatalf("count u-fei rows after upgrade: %v", err)
+	}
+	if feiRows != 2 {
+		t.Fatalf("u-fei row count after upgrade = %d, want 2 (multi-project membership retained)", feiRows)
 	}
 }
 
