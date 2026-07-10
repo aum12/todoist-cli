@@ -1923,3 +1923,77 @@ func TestUpsertBatch_TypedFailureDoesNotStrandUsersGeneric(t *testing.T) {
 		t.Fatalf("users count = %d, want 0 (typed insert violated NOT NULL on %q)", typed, "workspaces_id")
 	}
 }
+
+// TestTombstoneTasksNotIn verifies active-set reconciliation: locally-open
+// tasks absent from the keep set are tombstoned (is_deleted=1), tasks in the
+// set stay open, and already-completed/deleted rows are left untouched.
+func TestTombstoneTasksNotIn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	db := s.DB()
+	seed := func(id string, checked, deleted int) {
+		if _, err := db.Exec(
+			`INSERT INTO tasks (id, data, content, checked, is_deleted) VALUES (?, ?, ?, ?, ?)`,
+			id, `{"id":"`+id+`"}`, "task "+id, checked, deleted); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("keep-1", 0, 0)
+	seed("keep-2", 0, 0)
+	seed("ghost-1", 0, 0)
+	seed("ghost-2", 0, 0)
+	seed("done-1", 1, 0) // already completed → not a reconcile candidate
+	seed("del-1", 0, 1)  // already deleted   → not a reconcile candidate
+
+	keep := map[string]struct{}{"keep-1": {}, "keep-2": {}}
+	n, err := s.TombstoneTasksNotIn(keep)
+	if err != nil {
+		t.Fatalf("TombstoneTasksNotIn: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("tombstoned = %d, want 2 (ghost-1, ghost-2)", n)
+	}
+
+	isDeleted := func(id string) int {
+		var v int
+		if err := db.QueryRow(`SELECT is_deleted FROM tasks WHERE id=?`, id).Scan(&v); err != nil {
+			t.Fatalf("query %s: %v", id, err)
+		}
+		return v
+	}
+	for _, id := range []string{"ghost-1", "ghost-2"} {
+		if got := isDeleted(id); got != 1 {
+			t.Fatalf("%s is_deleted = %d, want 1 (should be tombstoned)", id, got)
+		}
+	}
+	for _, id := range []string{"keep-1", "keep-2"} {
+		if got := isDeleted(id); got != 0 {
+			t.Fatalf("%s is_deleted = %d, want 0 (in active set, must stay open)", id, got)
+		}
+	}
+
+	// A row already completed must be left completely untouched — not counted,
+	// not re-flagged as deleted.
+	var checked, del int
+	if err := db.QueryRow(`SELECT checked, is_deleted FROM tasks WHERE id='done-1'`).Scan(&checked, &del); err != nil {
+		t.Fatalf("query done-1: %v", err)
+	}
+	if checked != 1 || del != 0 {
+		t.Fatalf("done-1 checked=%d is_deleted=%d, want 1/0 (untouched)", checked, del)
+	}
+
+	// Idempotent: re-running with the same keep set tombstones nothing new
+	// (the former ghosts are no longer open candidates).
+	n2, err := s.TombstoneTasksNotIn(keep)
+	if err != nil {
+		t.Fatalf("second TombstoneTasksNotIn: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second run tombstoned = %d, want 0 (idempotent)", n2)
+	}
+}

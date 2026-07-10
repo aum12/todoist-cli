@@ -1655,6 +1655,76 @@ func (s *Store) UpsertCollaborators(data json.RawMessage) error {
 	return tx.Commit()
 }
 
+// TombstoneTasksNotIn marks every locally-open task — checked in {0, NULL}
+// AND is_deleted in {0, NULL} — whose id is absent from keep as is_deleted=1,
+// returning the number of rows tombstoned.
+//
+// Rationale: the tasks sync reads /api/v1/tasks, which lists ACTIVE tasks only
+// and never reports a completion or deletion — a task closed in the app simply
+// drops out of the list. Upsert-only sync therefore leaves it behind as a
+// phantom "open" row forever (it pollutes agenda/near/focus/priority views).
+// After a full, untruncated, anomaly-free active-tasks sync, the set of ids
+// seen IS the complete active set, so any locally-open row not in it has left
+// the server's active set and is reconciled here.
+//
+// CONTRACT: keep MUST be the complete active-task id set. A partial or
+// truncated sync would wrongly tombstone live tasks — callers gate on a clean,
+// non-truncated run and a non-empty keep set before calling.
+func (s *Store) TombstoneTasksNotIn(keep map[string]struct{}) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Collect locally-open ids first, then filter against keep in Go. The read
+	// cursor is fully drained and closed before any UPDATE so the write does
+	// not contend with an open statement on the same connection.
+	rows, err := tx.Query(`SELECT id FROM tasks WHERE (checked IS NULL OR checked = 0) AND (is_deleted IS NULL OR is_deleted = 0)`)
+	if err != nil {
+		return 0, fmt.Errorf("scanning open tasks: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning open task id: %w", err)
+		}
+		if _, ok := keep[id]; !ok {
+			stale = append(stale, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("reading open task ids: %w", err)
+	}
+	rows.Close()
+
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	stmt, err := tx.Prepare(`UPDATE tasks SET is_deleted = 1, synced_at = ? WHERE id = ?`)
+	if err != nil {
+		return 0, fmt.Errorf("preparing tombstone: %w", err)
+	}
+	defer stmt.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, id := range stale {
+		if _, err := stmt.Exec(now, id); err != nil {
+			return 0, fmt.Errorf("tombstoning task %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing tombstones: %w", err)
+	}
+	return len(stale), nil
+}
+
 // upsertJoinTx writes the per-resource domain-table portion of a
 // join upsert inside an existing transaction. The caller is
 // responsible for the generic resources insert (via upsertGenericResourceTx)

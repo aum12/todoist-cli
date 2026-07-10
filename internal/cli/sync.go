@@ -524,6 +524,19 @@ func syncResource(ctx context.Context, c interface {
 	var consumedTotal int
 	anomalyEmitted := false
 
+	// Active-set reconciliation (tasks + full sync only). /api/v1/tasks lists
+	// ACTIVE tasks only and never reports a completion/deletion, so upsert-only
+	// sync leaves closed tasks behind as phantom "open" rows. On a full,
+	// untruncated, anomaly-free run the ids seen ARE the complete active set, so
+	// afterward we tombstone locally-open rows no longer present. truncated is
+	// tripped by any early/abnormal loop exit that could leave the set partial.
+	reconcileActiveTasks := resource == "tasks" && full
+	var seenTaskIDs map[string]struct{}
+	if reconcileActiveTasks {
+		seenTaskIDs = make(map[string]struct{}, 512)
+	}
+	truncated := false
+
 	for {
 		params := map[string]string{}
 
@@ -625,6 +638,14 @@ func syncResource(ctx context.Context, c interface {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("upserting batch for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
+		if reconcileActiveTasks {
+			for _, it := range items {
+				if id := extractTaskID(it); id != "" {
+					seenTaskIDs[id] = struct{}{}
+				}
+			}
+		}
+
 		consumedTotal += len(items)
 		extractFailureTotal += extractFailures
 
@@ -687,6 +708,7 @@ func syncResource(ctx context.Context, c interface {
 					fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", resource, maxPages)
 				}
 			}
+			truncated = true
 			break
 		}
 
@@ -702,6 +724,7 @@ func syncResource(ctx context.Context, c interface {
 			} else {
 				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", resource, resource)
 			}
+			truncated = true
 			break
 		}
 		lastNextCursor = nextCursor
@@ -722,6 +745,7 @@ func syncResource(ctx context.Context, c interface {
 			} else {
 				// A cursor-based API reporting has_more without a next cursor
 				// cannot advance safely; stop instead of looping silently.
+				truncated = true
 				break
 			}
 		}
@@ -737,6 +761,28 @@ func syncResource(ctx context.Context, c interface {
 
 	// Final sync state: clear cursor (sync is complete), update count
 	_ = db.SaveSyncState(resource, "", totalCount)
+
+	// Reconcile the active set: tombstone locally-open tasks that fell out of
+	// the server's active list (completed/deleted in-app). Gated hard — only a
+	// full, untruncated, anomaly-free run with a non-empty seen set is trusted
+	// as the complete active set; anything less could wrongly tombstone live
+	// tasks, so we skip and leave the phantoms for the next clean full sync.
+	if reconcileActiveTasks && !truncated && !anomalyEmitted && len(seenTaskIDs) > 0 {
+		tombstoned, err := db.TombstoneTasksNotIn(seenTaskIDs)
+		if err != nil {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\nwarning: tasks reconciliation failed: %v\n", err)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"tasks","reason":"reconcile_failed","message":"%s"}`+"\n", strings.ReplaceAll(err.Error(), `"`, `\"`))
+			}
+		} else if tombstoned > 0 {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\n  tasks: reconciled %d task(s) completed/deleted in-app and no longer active\n", tombstoned)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_reconcile","resource":"tasks","tombstoned":%d,"reason":"not_in_active_set"}`+"\n", tombstoned)
+			}
+		}
+	}
 
 	// F4b symptom probe: if items were consumed and successfully
 	// extracted (extractFailures < consumed) but nothing landed in
@@ -871,6 +917,20 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	}
 
 	return nil, "", false
+}
+
+// extractTaskID pulls the "id" field from a task item, for active-set
+// reconciliation. Returns "" if the item is not a JSON object or has no id;
+// such items are simply not added to the seen set (and a run with extraction
+// anomalies is gated out of reconciliation entirely by the caller).
+func extractTaskID(item json.RawMessage) string {
+	var probe struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(item, &probe); err != nil {
+		return ""
+	}
+	return probe.ID
 }
 
 func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
